@@ -55,11 +55,12 @@ jobs:
 
           echo "tgextra_version=$TGEXTRA_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Download latest SideloadFix.dylib
+      - name: Download latest Sideload & NSE Fix.dylib
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release download release --repo waruhachi/SideloadFix --pattern 'SideloadFix.dylib' --dir .
+          gh release download release --repo TheWinner02/NSEFix --pattern 'NSEFix.dylib' --dir .
 
       - name: Upload Dependencies
         uses: actions/upload-artifact@v4
@@ -69,10 +70,11 @@ jobs:
             decrypted.ipa
             TGExtra.bundle
             SideloadFix.dylib
+            NSEFix.dylib
             com.choco.tg_*_iphoneos-arm.deb
 
   inject:
-    name: Inject TGExtra & SideloadFix
+    name: Inject TGExtra + Sideload & NSE Fix
     needs: prepareDependencies
     runs-on: macos-latest
     env:
@@ -87,12 +89,20 @@ jobs:
           name: dependencies
           merge-multiple: true
 
-      - name: Install Cyan CLI
+      - name: Install insert_dylib
         run: |
-          pip install --force-reinstall https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+          git clone https://github.com/Tyilo/insert_dylib.git
+          cc insert_dylib/insert_dylib/main.c -o insert_dylib_bin
+          sudo mv insert_dylib_bin /usr/local/bin/insert_dylib
 
-      - name: Inject TGExtra & SideloadFix into IPA
+      - name: Install ldid
         run: |
+           brew install ldid
+
+      - name: Inject TGExtra + SideloadFix + NSEFix into IPA
+        run: |
+          set -e
+
           DECRYPTED_IPA="dependencies/decrypted.ipa"
           TGEXTRA_BUNDLE="dependencies/TGExtra.bundle"
           TGEXTRA_DEB="dependencies/com.choco.tg_${TGEXTRA_VERSION}_iphoneos-arm.deb"
@@ -100,12 +110,48 @@ jobs:
           OUT_BASE="$IPA_BUNDLE_ID-$IPA_VERSION-TGExtra-$TGEXTRA_VERSION"
           OUT_IPA="$OUT_BASE.ipa"
           OUT_TIPA="$OUT_BASE.tipa"
+          TMP_DIR="tmp-ipa"
+          DYLIB_NAME="libTGExtra.dylib"
 
-          cyan -i "$DECRYPTED_IPA" -o "$OUT_IPA" -uwsgqf "$TGEXTRA_DEB" "$TGEXTRA_BUNDLE"
+          mkdir -p deb-extract artifacts
+          ar x "$TGEXTRA_DEB"
+          tar -xf data.tar.* -C deb-extract
+          
+          find deb-extract -name "*.dylib"
 
-          cp "$OUT_IPA" "$OUT_TIPA"
-          mkdir -p artifacts
-          mv "$OUT_IPA" "$OUT_TIPA" artifacts/
+
+          unzip "$DECRYPTED_IPA" -d "$TMP_DIR"
+          APP_PATH=$(find "$TMP_DIR/Payload" -type d -name "*.app" | head -n 1)
+          PLIST="$APP_PATH/Info.plist"
+          EXECUTABLE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$PLIST")
+          BIN_PATH="$APP_PATH/$EXECUTABLE_NAME"
+
+          mkdir -p "$APP_PATH/Frameworks"
+          
+          DYLIB_PATH=$(find deb-extract -name "*.dylib" | head -n 1)
+          cp "$DYLIB_PATH" "$APP_PATH/Frameworks/$DYLIB_NAME"
+          
+          cp "dependencies/SideloadFix.dylib" "$APP_PATH/Frameworks/SideloadFix.dylib"
+          cp "dependencies/NSEFix.dylib" "$APP_PATH/Frameworks/NSEFix.dylib"
+
+          insert_dylib --all-yes @executable_path/Frameworks/$DYLIB_NAME "$BIN_PATH"
+          mv "$BIN_PATH"_patched "$BIN_PATH"
+          insert_dylib --all-yes @executable_path/Frameworks/SideloadFix.dylib "$BIN_PATH"
+          mv "$BIN_PATH"_patched "$BIN_PATH"
+          insert_dylib --all-yes @executable_path/Frameworks/NSEFix.dylib "$BIN_PATH"
+          mv "$BIN_PATH"_patched "$BIN_PATH"
+
+          cp -R "$TGEXTRA_BUNDLE" "$APP_PATH/"
+
+          ldid -S "$BIN_PATH"
+
+          otool -L "$BIN_PATH" | grep -E "($DYLIB_NAME|SideloadFix.dylib|NSEFix.dylib)"
+
+          (cd "$TMP_DIR" && zip -qr "../$OUT_IPA" .)
+          cp "$OUT_IPA" "artifacts/$OUT_IPA"
+          cp "$OUT_IPA" "artifacts/$OUT_TIPA"
+          
+          rm -rf deb-extract "$TMP_DIR"
 
       - name: Upload injected IPA
         uses: actions/upload-artifact@v4

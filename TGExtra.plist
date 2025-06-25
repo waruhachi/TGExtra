@@ -1,1 +1,1 @@
-{ Filter = { Bundles = ( "ph.telegra.Telegraph", "app.swiftgram.ios", "com.seastar.turrit" ); }; }
+{ Filter = { Bundles = ( "ph.telegra.Telegraph", "app.swiftgram.ios", "com.seastar.turrit", "app.nicegram", "com.olcorporation.olai" ); }; }
